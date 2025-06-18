@@ -9,7 +9,7 @@ This project was built in response to a system design challenge focused on perfo
 ## 🧩 Architecture Overview
 
 - **MFTTransfer.Api** – Exposes endpoints for initiating uploads and managing transfer sessions.
-- **MFTTransfer.BackgroundJobs** – Hosts Kafka consumers and background handlers for chunk processing, retries, and status tracking.
+- **MFTTransfer.BackgroundJobs.[NodeID]** – Hosts Kafka consumers and background handlers for chunk processing, retries, and status tracking.
 - **MFTTransfer.Domain** – Contains data models, enums, and interfaces for clean architecture boundaries.
 - **MFTTransfer.Infrastructure** – Houses caching logic (Redis, memory), blob storage access, Kafka services, and reusable helpers.
 - **MFTTransfer.Monitoring** – Implements Prometheus-based metrics and logging.
@@ -31,14 +31,14 @@ This project was built in response to a system design challenge focused on perfo
 
 ## 📂 Folder Highlights
 
-| Project                          | Key Responsibilities                                      |
+| Project                          | Key Responsibilities                                        |
 |----------------------------------|-------------------------------------------------------------|
-| `MFTTransfer.Api`               | REST API to initiate and control file transfers             |
-| `MFTTransfer.BackgroundJobs`    | Kafka consumers, chunk handlers, retry logic                |
-| `MFTTransfer.Domain`            | Data models: `ChunkMessage`, `FileMetadata`, etc.           |
-| `MFTTransfer.Infrastructure`    | Services: Kafka, Blob, Redis, caching, constants, interfaces|
-| `MFTTransfer.Monitoring`        | `PrometheusMetrics`, `LogCollector`                         |
-| `MFTTransfer.Utilities`         | Helpers: chunking, hashing, compression                     |
+| `MFTTransfer.Api`                | REST API to initiate and control file transfers             |
+| `MFTTransfer.BackgroundJobs.*`   | Kafka consumers, chunk handlers, retry logic                |
+| `MFTTransfer.Domain`             | Data models: `ChunkMessage`, `FileMetadata`, etc.           |
+| `MFTTransfer.Infrastructure`     | Services: Kafka, Blob, Redis, caching, constants, interfaces|
+| `MFTTransfer.Monitoring`         | `PrometheusMetrics`, `LogCollector`                         |
+| `MFTTransfer.Utilities`          | Helpers: chunking, hashing, compression                     |
 
 ---
 
@@ -71,6 +71,19 @@ This project was built in response to a system design challenge focused on perfo
 
 ---
 
+## 🔁 Scalability
+
+
+**The BackgroundJob service** is designed to be easily scalable across multiple nodes.
+
+**Local development**: To simulate multiple nodes locally, simply clone the NodeA project to a new folder (e.g., NodeB, NodeC), and update the NodeId in the NodeSettings section of the appsettings.json file.
+
+**Production deployment (Docker/Azure)**: You only need a single project. By adjusting the configuration (e.g., NodeId in appsettings.json or environment variables), you can deploy multiple instances without duplicating the source code.
+
+This approach allows each node to operate independently while sharing the same codebase, making the system efficient and easy to scale horizontally.
+
+---
+
 ## 🧪 How to Run (Local Dev)
 
 ```bash
@@ -87,4 +100,8 @@ dotnet build
 dotnet run --project MFTTransfer.Api
 
 # 4. Setup other services (background jobs, etc.)
-dotnet run --project MFTTransfer.BackgroundJobs
+dotnet run --project MFTTransfer.BackgroundJobs.DeployedNodeA (for using NodeA)
+dotnet run --project MFTTransfer.BackgroundJobs.DeployedNodeB (for using NodeB)
+dotnet run --project MFTTransfer.BackgroundJobs.DeployedNodeC (for using NodeC)
+dotnet run --project MFTTransfer.BackgroundJobs.DeployedNodeD (for using NodeD)
+
