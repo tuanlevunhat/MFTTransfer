@@ -4,6 +4,7 @@ using MFTTransfer.Domain.Entities;
 using MFTTransfer.Domain.Interfaces;
 using MFTTransfer.Infrastructure.Constants;
 using MFTTransfer.Infrastructure.Services.Kafka;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json.Linq;
 using System;
@@ -16,11 +17,25 @@ namespace MFTTransfer.Infrastructure.Services
     {
         private readonly BaseProducerService _producerService;
         private readonly ILogger<KafkaService> _logger;
+        private readonly IConfiguration _configuration;
+        private readonly string _fileTransferInitTopic;
+        private readonly string _kafkaChunkProcessingTopic;
+        private readonly string _kafkaTransferProgressTopic;
+        private readonly string _kafkaTransferCompleteTopic;
+        private readonly string _kafkaRetryDownloadChunkTopic;
+        private readonly string _kafkaStatusUpdateTopic;
 
-        public KafkaService(BaseProducerService producerService, ILogger<KafkaService> logger)
+        public KafkaService(BaseProducerService producerService, ILogger<KafkaService> logger, IConfiguration configuration)
         {
             _producerService = producerService;
             _logger = logger;
+            _configuration = configuration;
+            _fileTransferInitTopic = _configuration["Kafka:Topic:FileTransferInit"];
+            _kafkaChunkProcessingTopic = _configuration["Kafka:Topic:ChunkProcessing"];
+            _kafkaTransferProgressTopic = _configuration["Kafka:Topic:TransferProgress"];
+            _kafkaTransferCompleteTopic = _configuration["Kafka:Topic:TransferComplete"];
+            _kafkaRetryDownloadChunkTopic = _configuration["Kafka:Topic:RetryDownloadChunk"];
+            _kafkaStatusUpdateTopic = _configuration["Kafka:Topic:StatusUpdate"];
         }
 
         private async Task SendAsync(string topic, Message<string, string> message)
@@ -37,13 +52,13 @@ namespace MFTTransfer.Infrastructure.Services
             }
         }
 
-        public Task SendInitTransferMessage(FileTransferInitMessage message)
+        public Task SendInitTransferMessage(string topic, FileTransferInitMessage message)
         {
             try
             {
                 _logger.LogInformation("📨 Init transfer message sent for file {FileId}", message.FileId);
                 var value = JsonSerializer.Serialize(message);
-                return SendAsync(KafkaConstant.KafkaFileTransferInitTopic, new Message<string, string> { Key = message.FileId, Value = value });
+                return SendAsync(topic, new Message<string, string> { Key = message.FileId, Value = value });
             }
             catch (ProduceException<string, string> ex)
             {
@@ -87,7 +102,7 @@ namespace MFTTransfer.Infrastructure.Services
             {
                 _logger.LogInformation("📨 Chunk message sent for file {FileId}", message.FileId);
                 var value = JsonSerializer.Serialize(message);
-                return SendAsync(KafkaConstant.KafkaChunkProcessingTopic, new Message<string, string> { Key = fileId, Value = value });
+                return SendAsync(_kafkaChunkProcessingTopic, new Message<string, string> { Key = fileId, Value = value });
             }
             catch (ProduceException<string, string> ex)
             {
@@ -118,8 +133,8 @@ namespace MFTTransfer.Infrastructure.Services
         {
             try
             {
-                _logger.LogInformation("📨 Subscribe to status message sent for topic {topic}", KafkaConstant.KafkaTransferProgressTopic);
-                return SendAsync(KafkaConstant.KafkaTransferProgressTopic, new Message<string, string>
+                _logger.LogInformation("📨 Subscribe to status message sent for topic {topic}", _kafkaTransferProgressTopic);
+                return SendAsync(_kafkaTransferProgressTopic, new Message<string, string>
                 {
                     Key = fileId,
                     Value = JsonSerializer.Serialize(message)
@@ -136,8 +151,8 @@ namespace MFTTransfer.Infrastructure.Services
         {
             try
             {
-                _logger.LogInformation("📨 Subscribe to status message sent for topic {topic}", KafkaConstant.KafkaTransferCompleteTopic);
-                return SendAsync(KafkaConstant.KafkaTransferCompleteTopic, new Message<string, string>
+                _logger.LogInformation("📨 Subscribe to status message sent for topic {topic}", _kafkaTransferCompleteTopic);
+                return SendAsync(_kafkaTransferCompleteTopic, new Message<string, string>
                 {
                     Key = fileId,
                     Value = JsonSerializer.Serialize(message)
@@ -154,7 +169,7 @@ namespace MFTTransfer.Infrastructure.Services
         {
             try
             {
-                var topic = KafkaConstant.KafkaRetryDownloadChunkTopic;
+                var topic = _kafkaRetryDownloadChunkTopic;
                 var message = JsonSerializer.Serialize(request);
 
                 _logger.LogInformation("📨 RetryChunkRequest sent for FileId={FileId}, ChunkId={ChunkId}, NodeId={NodeId}",

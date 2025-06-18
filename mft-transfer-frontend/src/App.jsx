@@ -10,7 +10,7 @@ import 'bootstrap/dist/css/bootstrap.min.css';
 import { ProgressBar } from 'react-bootstrap';
 import { io } from 'socket.io-client';
 function App() {
-  const [fullPath, setFullPath] = useState('D://testfile.zip');
+  const [fullPath, setFullPath] = useState('D://Gosell.zip');
   const [receivedNodes, setReceivedNodes] = useState([]);
   const [isParallelReceive, setIsParallelReceive] = useState(true);
   const [isTransfering, setIsTransfering] = useState(false);
@@ -85,9 +85,10 @@ function App() {
   const handleTransfer = async () => {
     try {
       const response = await api.post('FileTransfer/transfer', {
-        fullPath,
-        receivedNodes,
-        isParallelReceive
+        transferNode: NFTNode.A,
+        fullPath: fullPath,
+        receivedNodes: receivedNodes,
+        isParallelReceive: isParallelReceive
       });
       setIsTransfering(true);
       console.log('Transfer initiated:', response.data);

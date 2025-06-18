@@ -9,7 +9,7 @@ namespace MFTTransfer.Domain.Interfaces
 {
     public interface IKafkaService
     {
-        Task SendInitTransferMessage(FileTransferInitMessage message);
+        Task SendInitTransferMessage(string topic, FileTransferInitMessage message);
         Task SendChunkMessageToNode(string topic, ChunkMessage chunkMessage);
         Task SendChunkMessage(string fileId, ChunkMessage message);
         Task SendTransferCompleteMessage(string fileId, TransferProgressMessage message);
