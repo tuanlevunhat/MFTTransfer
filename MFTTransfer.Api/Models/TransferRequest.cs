@@ -2,6 +2,8 @@
 {
     public class TransferRequest
     {
+        public string TransferNode { get; set; }
+
         public string FullPath { get; set; }
 
         public bool IsParallelReceive { get; set; }
