@@ -48,13 +48,14 @@ namespace MFTTransfer.Api.Controllers
                 if (fileInfo.Length == 0)
                     return BadRequest("File is empty.");
 
-                if (fileInfo.Length > 5L * 1024 * 1024 * 1024)
-                    return BadRequest("File exceeds maximum allowed size (5GB).");
+                if (fileInfo.Length > 10L * 1024 * 1024 * 1024)
+                    return BadRequest("File exceeds maximum allowed size (10GB).");
 
                 _logger.LogInformation("📤 Sending file info to Kafka: {FilePath}, size: {Size} bytes", fileInfo.FullName, fileInfo.Length);
 
                 var initMessage = new FileTransferInitMessage
                 {
+                    TransferNode = transferRequest.TransferNode,
                     FileId = fileId,
                     FullName = fileInfo.Name,
                     FullPath = transferRequest.FullPath,
@@ -63,7 +64,7 @@ namespace MFTTransfer.Api.Controllers
                 };
 
                 var topic = string.Concat(_configuration["Kafka:Topic:FileTransferInit"], "_", transferRequest.TransferNode);
-                await _kafkaService.SendInitTransferMessage(topic, initMessage);
+                await _kafkaService.SendInitTransferMessageAsync(topic, initMessage);
 
                 return Ok(new { FileId = fileId, Size = fileInfo.Length });
             }

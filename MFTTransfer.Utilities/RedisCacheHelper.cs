@@ -4,12 +4,14 @@ using Microsoft.Extensions.Logging;
 
 public class RedisCacheHelper
 {
+    private readonly IConnectionMultiplexer _connectionMultiplexer;
     private readonly IDatabase _database;
     private readonly ILogger<RedisCacheHelper> _logger;
 
-    public RedisCacheHelper(IConnectionMultiplexer redis, ILogger<RedisCacheHelper> logger)
+    public RedisCacheHelper(IConnectionMultiplexer connectionMultiplexer, ILogger<RedisCacheHelper> logger)
     {
-        _database = redis.GetDatabase();
+        _connectionMultiplexer = connectionMultiplexer;
+        _database = connectionMultiplexer.GetDatabase();
         _logger = logger;
     }
 
@@ -81,13 +83,20 @@ public class RedisCacheHelper
 
     public async Task<List<string>> GetPatternAsync(string pattern)
     {
-        var keys = await _database.HashKeysAsync(pattern);
+        var endpoints = _connectionMultiplexer.GetEndPoints();
+        var server = _connectionMultiplexer.GetServer(endpoints.First());
+
+        var keys = server.Keys(pattern: pattern, pageSize: int.MaxValue);
         return keys.Select(k => k.ToString().Split(':').Last()).ToList();
     }
 
     public async Task<List<string>> GetKeysByPatternAsync(string pattern)
     {
-        var keys = await _database.HashKeysAsync(pattern);
-        return keys.Select(_k => _k.ToString()).ToList();
+        var endpoints = _connectionMultiplexer.GetEndPoints();
+        var server = _connectionMultiplexer.GetServer(endpoints.First());
+
+        var keys = server.Keys(pattern: pattern, pageSize: int.MaxValue);
+        return keys.Select(k => k.ToString()).ToList();
     }
+
 }

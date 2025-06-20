@@ -32,20 +32,22 @@ namespace MFTTransfer.Infrastructure.Services.Kafka
         {
             foreach (var handler in _handlers)
             {
-                var task = Task.Run(() => StartConsumerLoop(handler, stoppingToken), stoppingToken);
+                var task = Task.Run(() => StartConsumerLoopAsync(handler, stoppingToken), stoppingToken);
                 _runningConsumers.Add(task);
             }
 
             return Task.CompletedTask;
         }
 
-        private async Task StartConsumerLoop(IKafkaMessageHandler handler, CancellationToken cancellationToken)
+        private async Task StartConsumerLoopAsync(IKafkaMessageHandler handler, CancellationToken cancellationToken)
         {
             var config = new ConsumerConfig
             {
                 BootstrapServers = _config["Kafka:BootstrapServers"],
                 GroupId = handler.GroupId,
-                AutoOffsetReset = AutoOffsetReset.Earliest
+                AutoOffsetReset = AutoOffsetReset.Earliest,
+                MaxPollIntervalMs = int.Parse(_config["Kafka:MaxPollIntervalMs"] ?? "300000"),
+                EnableAutoCommit = false
             };
 
             using var consumer = new ConsumerBuilder<string, string>(config)
@@ -53,30 +55,61 @@ namespace MFTTransfer.Infrastructure.Services.Kafka
                 .Build();
 
             consumer.Subscribe(handler.Topic);
-            _logger.LogInformation("Subscribed to topic {Topic}", handler.Topic);
+            _logger.LogInformation("✅ Subscribed to topic {Topic}", handler.Topic);
+
+            var processingSemaphore = new SemaphoreSlim(int.Parse(_config["MaxDegreeOfParallelism"] ?? "4")); // ⬅️ limit parallelism
+            var processingTasks = new List<Task>();
 
             while (!cancellationToken.IsCancellationRequested)
             {
                 try
                 {
                     var result = consumer.Consume(cancellationToken);
+
                     if (!string.IsNullOrWhiteSpace(result?.Message?.Value))
                     {
-                        await handler.HandleAsync(result.Message.Value, cancellationToken);
-                        consumer.Commit(result);
+                        await processingSemaphore.WaitAsync(cancellationToken);
+
+                        var task = Task.Run(async () =>
+                        {
+                            try
+                            {
+                                await handler.HandleAsync(result.Message.Value, cancellationToken);
+                                consumer.Commit(result);
+                            }
+                            catch (Exception ex)
+                            {
+                                _logger.LogError(ex, "❌ Error handling Kafka message");
+                                // Optionally: NACK or move to dead-letter
+                            }
+                            finally
+                            {
+                                processingSemaphore.Release();
+                            }
+                        }, cancellationToken);
+
+                        processingTasks.Add(task);
                     }
                 }
                 catch (ConsumeException ex)
                 {
-                    _logger.LogError(ex, "Kafka consume exception: {Reason}", ex.Error.Reason);
+                    _logger.LogError(ex, "⚠️ Kafka consume exception: {Reason}", ex.Error.Reason);
                     await Task.Delay(1000, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    _logger.LogInformation("🔁 Kafka consumer cancellation requested");
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Unhandled exception while consuming Kafka topic");
+                    _logger.LogError(ex, "❌ Unhandled exception in Kafka consumer");
                     await Task.Delay(1000, cancellationToken);
                 }
             }
+
+            _logger.LogInformation("🛑 Kafka consumer shutting down. Waiting for pending tasks...");
+
+            await Task.WhenAll(processingTasks);
         }
     }
 

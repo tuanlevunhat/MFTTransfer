@@ -68,8 +68,8 @@ namespace MFTTransfer.BackgroundJobs
 
         private async Task TryCommitIfComplete(string fileId)
         {
-            var uploaded = await _redisService.CountUploadedBlocks(fileId);
-            var total = await _redisService.GetTotalChunks(fileId);
+            var uploaded = await _redisService.CountUploadedBlocksAsync(fileId);
+            var total = await _redisService.GetTotalChunksAsync(fileId);
 
             _logger.LogInformation("🧮 Checking commit condition: {Uploaded}/{Total} for file {FileId}", uploaded, total, fileId);
 

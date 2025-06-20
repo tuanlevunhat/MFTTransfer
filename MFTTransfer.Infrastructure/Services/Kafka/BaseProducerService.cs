@@ -19,8 +19,8 @@ namespace MFTTransfer.Infrastructure.Services.Kafka
             {
                 BootstrapServers = bootstrapServers,
                 Acks = Acks.All,
-                MessageSendMaxRetries = 3,
-                RetryBackoffMs = 1000,
+                MessageSendMaxRetries = int.Parse(configuration["Kafka:MessageSendMaxRetries"] ?? "3"),
+                RetryBackoffMs = int.Parse(configuration["Kafka:RetryBackoffMs"] ?? "1000"),
                 EnableIdempotence = true
             };
 

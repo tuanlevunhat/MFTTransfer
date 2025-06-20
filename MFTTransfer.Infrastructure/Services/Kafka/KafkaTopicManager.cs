@@ -18,6 +18,7 @@ namespace MFTTransfer.Infrastructure.Services.Kafka
 
         public async Task EnsureTopicExistsAsync(string topicName, int numPartitions = 1, short replicationFactor = 1)
         {
+            _logger.LogTrace("EnsureTopicExistsAsync called for {Topic}", topicName);
             using var adminClient = new AdminClientBuilder(new AdminClientConfig
             {
                 BootstrapServers = _bootstrapServers
@@ -41,13 +42,13 @@ namespace MFTTransfer.Infrastructure.Services.Kafka
             {
                 await adminClient.CreateTopicsAsync(new[]
                 {
-                new TopicSpecification
-                {
-                    Name = topicName,
-                    NumPartitions = numPartitions,
-                    ReplicationFactor = replicationFactor
-                }
-            });
+                    new TopicSpecification
+                    {
+                        Name = topicName,
+                        NumPartitions = numPartitions,
+                        ReplicationFactor = replicationFactor
+                    }
+                });
 
                 _logger.LogInformation("✅ Created Kafka topic '{Topic}'", topicName);
             }

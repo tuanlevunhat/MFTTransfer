@@ -4,7 +4,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace MFTTransfer.BackgroundJobs.Consumer.Nodes
+namespace MFTTransfer.BackgroundJobs.Helpers
 {
     public interface IChunkProcessingHelperFactory
     {

@@ -30,7 +30,7 @@ namespace MFTTransfer.Infrastructure.Services
 
         public async Task<object> RetryFailedChunksAsync(string fileId, string fullPath)
         {
-            var failedChunks = await _redisService.GetUploadFailedChunks(fileId);
+            var failedChunks = await _redisService.GetUploadFailedChunksAsync(fileId);
             if (failedChunks == null || !failedChunks.Any())
                 return new { Message = "No failed chunks to retry." };
 
@@ -57,7 +57,7 @@ namespace MFTTransfer.Infrastructure.Services
 
                     if (metadata != null)
                     {
-                        var totalChunks = await _redisService.GetTotalChunks(fileId);
+                        var totalChunks = await _redisService.GetTotalChunksAsync(fileId);
                         await _kafkaService.SendChunkMessage(fileId, new ChunkMessage()
                         {
                             FileId = fileId,
@@ -68,7 +68,7 @@ namespace MFTTransfer.Infrastructure.Services
                             TotalChunks = totalChunks,
                             IsLast = (index == totalChunks - 1)
                         });
-                        await _redisService.RemoveUploadChunkFromFailed(fileId, chunkId);
+                        await _redisService.RemoveUploadChunkFromFailedAsync(fileId, chunkId);
                         success++;
                     }
                     else failed++;

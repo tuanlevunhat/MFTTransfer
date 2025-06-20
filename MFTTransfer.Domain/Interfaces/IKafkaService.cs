@@ -9,12 +9,13 @@ namespace MFTTransfer.Domain.Interfaces
 {
     public interface IKafkaService
     {
-        Task SendInitTransferMessage(string topic, FileTransferInitMessage message);
-        Task SendChunkMessageToNode(string topic, ChunkMessage chunkMessage);
+        Task SendInitTransferMessageAsync(string topic, FileTransferInitMessage message);
+        Task SendChunkMessageAsync(string topic, ChunkMessage chunkMessage);
+        Task SendChunkBatchMessageAsync(string topic, string fileId, List<ChunkMessage> chunkMessages);
         Task SendChunkMessage(string fileId, ChunkMessage message);
-        Task SendTransferCompleteMessage(string fileId, TransferProgressMessage message);
-        Task SendTransferProgressMessage(string fileId, TransferProgressMessage message);
+        Task SendTransferCompleteMessageAsync(string topic, string fileId, TransferProgressMessage message);
+        Task SendTransferProgressMessageAsync(string fileId, TransferProgressMessage message);
         Task SendFinalizeUploadChunksMessage(string fileId);
-        Task SendRetryChunkRequest(RetryChunkRequest request);
+        Task SendRetryChunkMessageAsync(RetryChunkRequest request);
     }
 }
