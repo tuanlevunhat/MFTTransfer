@@ -5,7 +5,7 @@ namespace MFTTransfer.Domain.Interfaces
 {
     public interface IBlobService
     {
-        Task<ChunkMetadata> UploadBlobPerChunk(Stream stream, string fileId, string chunkId);
+        Task<ChunkMetadata> UploadBlobPerChunkAsync(Stream stream, string fileId, string chunkId);
         Task<ChunkMetadata> UploadChunk(Stream stream, string fileId, string chunkId);
         Task<string> FinalizeUpload(string fileId, List<string> blockList);
         Task CommitFileBlocksAsync(string fileId);

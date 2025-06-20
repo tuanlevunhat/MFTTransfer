@@ -17,6 +17,7 @@ namespace MFTTransfer.Infrastructure.Helpers
         private readonly BlobContainerClient _metadataContainer;
         private readonly BlobContainerClient _sourceContainer;
         private readonly ILogger<BlobStorageHelper> _logger;
+        private readonly IConfiguration _configuration;
 
         public BlobStorageHelper(IConfiguration configuration, ILogger<BlobStorageHelper> logger)
         {
@@ -25,6 +26,7 @@ namespace MFTTransfer.Infrastructure.Helpers
 
             _blobServiceClient = new BlobServiceClient(connectionString);
             _logger = logger;
+            _configuration = configuration;
 
             var sourceContainerName = configuration["BlobStorage:SourceContainer"] ?? "nft-source";
             var chunksContainerName = configuration["BlobStorage:ChunksContainer"] ?? "nft-chunks";
@@ -54,7 +56,7 @@ namespace MFTTransfer.Infrastructure.Helpers
                 var blockClient = container.GetBlockBlobClient(blobName);
                 var policy = Policy
                     .Handle<Azure.RequestFailedException>(ex => ex.ErrorCode != "InvalidBlobOrBlock")
-                    .WaitAndRetryAsync(3, 
+                    .WaitAndRetryAsync(int.Parse(_configuration["MaxRetryCount"] ?? "3"), 
                         retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)), 
                         onRetry: (exception, retryCount) =>
                         {

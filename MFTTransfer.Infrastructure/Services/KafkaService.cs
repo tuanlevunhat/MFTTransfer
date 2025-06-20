@@ -30,12 +30,12 @@ namespace MFTTransfer.Infrastructure.Services
             _producerService = producerService;
             _logger = logger;
             _configuration = configuration;
-            _fileTransferInitTopic = _configuration["Kafka:Topic:FileTransferInit"];
-            _kafkaChunkProcessingTopic = _configuration["Kafka:Topic:ChunkProcessing"];
-            _kafkaTransferProgressTopic = _configuration["Kafka:Topic:TransferProgress"];
-            _kafkaTransferCompleteTopic = _configuration["Kafka:Topic:TransferComplete"];
-            _kafkaRetryDownloadChunkTopic = _configuration["Kafka:Topic:RetryDownloadChunk"];
-            _kafkaStatusUpdateTopic = _configuration["Kafka:Topic:StatusUpdate"];
+            _fileTransferInitTopic = _configuration["Kafka:Topic:FileTransferInit"] ?? string.Empty;
+            _kafkaChunkProcessingTopic = _configuration["Kafka:Topic:ChunkProcessing"] ?? string.Empty;
+            _kafkaTransferProgressTopic = _configuration["Kafka:Topic:TransferProgress"] ?? string.Empty;
+            _kafkaTransferCompleteTopic = _configuration["Kafka:Topic:TransferComplete"] ?? string.Empty;
+            _kafkaRetryDownloadChunkTopic = _configuration["Kafka:Topic:RetryDownloadChunk"] ?? string.Empty;
+            _kafkaStatusUpdateTopic = _configuration["Kafka:Topic:StatusUpdate"] ?? string.Empty;
         }
 
         private async Task SendAsync(string topic, Message<string, string> message)
@@ -52,7 +52,7 @@ namespace MFTTransfer.Infrastructure.Services
             }
         }
 
-        public Task SendInitTransferMessage(string topic, FileTransferInitMessage message)
+        public Task SendInitTransferMessageAsync(string topic, FileTransferInitMessage message)
         {
             try
             {
@@ -67,7 +67,7 @@ namespace MFTTransfer.Infrastructure.Services
             }
         }
 
-        public async Task SendChunkMessageToNode(string topic, ChunkMessage chunkMessage)
+        public async Task SendChunkMessageAsync(string topic, ChunkMessage chunkMessage)
         {
             if (string.IsNullOrWhiteSpace(topic))
                 throw new ArgumentException("Topic must be provided.", nameof(topic));
@@ -92,6 +92,35 @@ namespace MFTTransfer.Infrastructure.Services
             catch (ProduceException<string, string> ex)
             {
                 _logger.LogError(ex, "❌ Failed to send chunk message to topic {Topic}", topic);
+                throw;
+            }
+        }
+
+        public async Task SendChunkBatchMessageAsync(string topic, string fileId, List<ChunkMessage> chunkMessages)
+        {
+            if (string.IsNullOrWhiteSpace(topic))
+                throw new ArgumentException("Topic must be provided.", nameof(topic));
+
+            if (chunkMessages == null)
+                throw new ArgumentNullException(nameof(chunkMessages));
+
+            var json = JsonSerializer.Serialize(chunkMessages);
+
+            var message = new Message<string, string>
+            {
+                Key = fileId,
+                Value = json
+            };
+
+            try
+            {
+                _logger.LogInformation("📨 Sending batch chunks to topic {Topic}", topic);
+                var result = await _producerService.Producer.ProduceAsync(topic, message);
+                _logger.LogInformation("✅ Batch chunks message sent to topic {Topic} at offset {Offset}", topic, result.Offset);
+            }
+            catch (ProduceException<string, string> ex)
+            {
+                _logger.LogError(ex, "❌ Failed to send Batch chunks message to topic {Topic}", topic);
                 throw;
             }
         }
@@ -129,7 +158,7 @@ namespace MFTTransfer.Infrastructure.Services
             }
         }
 
-        public Task SendTransferProgressMessage(string fileId, TransferProgressMessage message)
+        public Task SendTransferProgressMessageAsync(string fileId, TransferProgressMessage message)
         {
             try
             {
@@ -147,12 +176,12 @@ namespace MFTTransfer.Infrastructure.Services
             }
         }
 
-        public Task SendTransferCompleteMessage(string fileId, TransferProgressMessage message)
+        public Task SendTransferCompleteMessageAsync(string topic, string fileId, TransferProgressMessage message)
         {
             try
             {
-                _logger.LogInformation("📨 Subscribe to status message sent for topic {topic}", _kafkaTransferCompleteTopic);
-                return SendAsync(_kafkaTransferCompleteTopic, new Message<string, string>
+                _logger.LogInformation("📨 Subscribe to status message sent for topic {topic}", topic);
+                return SendAsync(topic, new Message<string, string>
                 {
                     Key = fileId,
                     Value = JsonSerializer.Serialize(message)
@@ -165,7 +194,7 @@ namespace MFTTransfer.Infrastructure.Services
             }
         }
 
-        public Task SendRetryChunkRequest(RetryChunkRequest request)
+        public Task SendRetryChunkMessageAsync(RetryChunkRequest request)
         {
             try
             {

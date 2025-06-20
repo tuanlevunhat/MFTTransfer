@@ -16,7 +16,7 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 
-namespace MFTTransfer.BackgroundJobs.Consumer.Nodes
+namespace MFTTransfer.BackgroundJobs.Helpers
 {
     public class ChunkProcessingHelper
     {
@@ -27,6 +27,7 @@ namespace MFTTransfer.BackgroundJobs.Consumer.Nodes
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IRedisService _redisService;
         private readonly IKafkaService _kafkaService;
+        private readonly IConfiguration _configuration;
 
         public ChunkProcessingHelper(ILogger logger,
             string nodeId,
@@ -34,7 +35,8 @@ namespace MFTTransfer.BackgroundJobs.Consumer.Nodes
             string mainFolder,
             IHttpClientFactory httpClientFactory,
             IRedisService redisService,
-            IKafkaService kafkaService)
+            IKafkaService kafkaService,
+            IConfiguration configuration)
         {
             _logger = logger;
             _nodeId = nodeId;
@@ -43,116 +45,65 @@ namespace MFTTransfer.BackgroundJobs.Consumer.Nodes
             _httpClientFactory = httpClientFactory;
             _redisService = redisService;
             _kafkaService = kafkaService;
+            _configuration = configuration;
         }
 
-        public async Task ProcessingChunk(string message, CancellationToken cancellationToken)
-        {
-            var chunk = JsonSerializer.Deserialize<ChunkMessage>(message);
-            if (chunk == null || string.IsNullOrWhiteSpace(chunk.ChunkId))
-            {
-                _logger.LogWarning("⚠️ Invalid chunk message received: {Message}", message);
-                return;
-            }
-
-            _logger.LogInformation("📦 Node {nodeId} received chunk {ChunkId} for file {FileId}", _nodeId, chunk.ChunkId, chunk.FileId);
-
-            try
-            {
-                var policy = Policy.Handle<Exception>().RetryAsync(3, onRetry: (ex, count) =>
-                    _logger.LogWarning(ex, "Retry {RetryCount} for chunk {ChunkId}", count, chunk.ChunkId));
-
-                await policy.ExecuteAsync(async () =>
-                {
-                    using var client = _httpClientFactory.CreateClient();
-                    using var response = await client.GetAsync(chunk.BlobUrl, cancellationToken);
-                    response.EnsureSuccessStatusCode();
-
-                    var data = await response.Content.ReadAsByteArrayAsync(cancellationToken);
-                    _logger.LogInformation("📥 Downloaded {Bytes} bytes for chunk {ChunkId}", data.Length, chunk.ChunkId);
-
-                    if (chunk.Size != 0 && data.Length != chunk.Size)
-                    {
-                        _logger.LogWarning("❗ Chunk {ChunkId} size mismatch. Expected {Expected}, got {Actual}", chunk.ChunkId, chunk.Size, data.Length);
-                        return;
-                    }
-
-                    var chunkFolder = Path.Combine(_tempFolder, chunk.FileId);
-                    Directory.CreateDirectory(chunkFolder);
-                    var chunkPath = Path.Combine(chunkFolder, chunk.ChunkId);
-                    await File.WriteAllBytesAsync(chunkPath, data, cancellationToken);
-                    await _redisService.SetProcessedChunks(chunk.FileId, _nodeId);
-                    if ((int)(((float)(chunk.ChunkIndex + 1) / (float)chunk.TotalChunks) * 100) % 5 == 0)
-                    {
-                        await _kafkaService.SendTransferProgressMessage(chunk.FileId, new TransferProgressMessage()
-                        {
-                            FileId = chunk.FileId,
-                            NodeId = _nodeId,
-                            Progress = (int)(((float)(chunk.ChunkIndex + 1) / (float)chunk.TotalChunks) * 100),
-                            Status = "InProgress"
-                        });
-                    }
-                    var total = chunk.TotalChunks;
-                    var current = await _redisService.GetProcessedChunks(chunk.FileId, _nodeId);
-
-                    if (current == total)
-                    {
-                        _logger.LogInformation("🎉 Node {_nodeId} completed all chunks for file {FileId}", _nodeId, chunk.FileId);
-                        await MergeChunks(chunk.FullFileName, chunk.FileId, current);
-                        await _kafkaService.SendTransferProgressMessage(chunk.FileId, new TransferProgressMessage()
-                        {
-                            FileId = chunk.FileId,
-                            NodeId = _nodeId,
-                            Progress = 100,
-                            Status = "Completed"
-                        });
-                    }
-                });
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "❌ Error handling chunk {ChunkId}");
-            }
-        }
-
-        public async Task ProcessChunksConcurrently(IEnumerable<ChunkMessage> chunks, CancellationToken cancellationToken)
+        public async Task ProcessChunksConcurrentlyAsync(IEnumerable<ChunkMessage> chunks, CancellationToken cancellationToken)
         {
             var channel = Channel.CreateUnbounded<ChunkResult>();
-            var semaphore = new SemaphoreSlim(2);
 
-            var writerTasks = chunks.Select(async chunk =>
+            var parallelOptions = new ParallelOptions
             {
-                await semaphore.WaitAsync(cancellationToken);
+                MaxDegreeOfParallelism = int.Parse(_configuration["MaxDegreeOfParallelism"] ?? "4"),
+                CancellationToken = cancellationToken
+            };
+
+            var writerTask = Parallel.ForEachAsync(chunks, parallelOptions, async (chunk, token) =>
+            {
                 try
                 {
-                    var result = await DownloadChunkWithRetry(chunk, cancellationToken);
+                    var result = await DownloadChunkWithRetryAsync(chunk, token);
                     if (result != null)
                     {
-                        await channel.Writer.WriteAsync(result, cancellationToken);
+                        await channel.Writer.WriteAsync(result, token);
+                    }
+                    else
+                    {
+                        _logger.LogWarning("⚠️ Chunk {ChunkId} download returned null", chunk.ChunkId);
                     }
                 }
-                finally
+                catch (Exception ex)
                 {
-                    semaphore.Release();
+                    _logger.LogError(ex, "❌ Unexpected error while downloading chunk {ChunkId}", chunk.ChunkId);
+                    await _redisService.MarkDownloadChunkFailedAsync(chunk.FileId, _nodeId, chunk.ChunkId);
                 }
-            }).ToList();
+            });
 
-            var readerTask = ProcessChannelAndMerge(channel, cancellationToken);
+            var readerTask = ProcessChannelAndMergeAsync(channel, cancellationToken);
 
-            await Task.WhenAll(writerTasks);
+            await writerTask;
             channel.Writer.Complete();
             await readerTask;
         }
 
-        private async Task<ChunkResult?> DownloadChunkWithRetry(ChunkMessage chunk, CancellationToken cancellationToken)
+        private async Task<ChunkResult?> DownloadChunkWithRetryAsync(ChunkMessage chunk, CancellationToken cancellationToken)
         {
             _logger.LogInformation("📦 Node {nodeId} received chunk {ChunkId} for file {FileId}", _nodeId, chunk.ChunkId, chunk.FileId);
-            var policy = Policy.Handle<Exception>().RetryAsync(3, onRetry: (ex, count) =>
-                _logger.LogWarning(ex, "🔁 Retry {Count} for chunk {ChunkId}", count, chunk.ChunkId));
+            var policy = Policy.Handle<Exception>().WaitAndRetryAsync(
+                int.Parse(_configuration["MaxRetryCount"] ?? "3"),
+                retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
+                onRetry: (ex, count) => _logger.LogWarning(ex, "🔁 Retry {Count} for chunk {ChunkId}", count, chunk.ChunkId));
 
             return await policy.ExecuteAsync(async () =>
             {
-                using var client = _httpClientFactory.CreateClient();
+                using var client = _httpClientFactory.CreateClient(_configuration["NodeSettings:NodeId"]);
                 using var response = await client.GetAsync(chunk.BlobUrl, cancellationToken);
+                
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogError("❌ HTTP {StatusCode} when downloading chunk {ChunkId}", response.StatusCode, chunk.ChunkId);
+                }
+
                 response.EnsureSuccessStatusCode();
 
                 var data = await response.Content.ReadAsByteArrayAsync(cancellationToken);
@@ -166,7 +117,7 @@ namespace MFTTransfer.BackgroundJobs.Consumer.Nodes
                         _logger.LogError("❌ Checksum mismatch for chunk {ChunkId}. Expected {Expected}, got {Actual}",
                             chunk.ChunkId, chunk.Checksum, calculated);
 
-                        await _redisService.MarkDownloadChunkFailed(chunk.FileId, _nodeId, chunk.ChunkId);
+                        await _redisService.MarkDownloadChunkFailedAsync(chunk.FileId, _nodeId, chunk.ChunkId);
                         return null;
                     }
                 }
@@ -181,7 +132,7 @@ namespace MFTTransfer.BackgroundJobs.Consumer.Nodes
             });
         }
 
-        private async Task ProcessChannelAndMerge(Channel<ChunkResult> channel, CancellationToken cancellationToken)
+        private async Task ProcessChannelAndMergeAsync(Channel<ChunkResult> channel, CancellationToken cancellationToken)
         {
             var chunkGroups = new Dictionary<string, List<ChunkResult>>();
 
@@ -192,8 +143,8 @@ namespace MFTTransfer.BackgroundJobs.Consumer.Nodes
                 var chunkPath = Path.Combine(chunkDir, result.ChunkId);
                 await File.WriteAllBytesAsync(chunkPath, result.Data, cancellationToken);
 
-                await _redisService.SetProcessedChunks(result.FileId, _nodeId);
-                await _redisService.ClearChunkResumeOffset(result.FileId, _nodeId, result.ChunkId);
+                await _redisService.SetProcessedChunksAsync(result.FileId, _nodeId);
+                await _redisService.ClearChunkResumeOffsetAsync(result.FileId, _nodeId, result.ChunkId);
 
                 if (!chunkGroups.TryGetValue(result.FileId, out var list))
                 {
@@ -202,27 +153,39 @@ namespace MFTTransfer.BackgroundJobs.Consumer.Nodes
                 }
                 list.Add(result);
 
-                var processedChunks = await _redisService.GetProcessedChunks(result.FileId, _nodeId);
+                var processedChunks = await _redisService.GetProcessedChunksAsync(result.FileId, _nodeId);
                 if (processedChunks == result.TotalChunks)
                 {
                     _logger.LogInformation("🎉 All chunks received for file {FileId}, merging...", result.FileId);
-                    await MergeChunks(result.FileName, result.FileId, result.TotalChunks);
-                    chunkGroups.Remove(result.FileId);
-                    await _kafkaService.SendTransferProgressMessage(result.FileId, new TransferProgressMessage()
+
+                    _ = Task.Run(async () =>
                     {
-                        FileId = result.FileId,
-                        NodeId = _nodeId,
-                        Progress = 100,
-                        Status = "Completed"
+                        try
+                        {
+                            await MergeChunksAsync(result.FileName, result.FileId, result.TotalChunks);
+                            await _kafkaService.SendTransferProgressMessageAsync(result.FileId, new TransferProgressMessage()
+                            {
+                                FileId = result.FileId,
+                                NodeId = _nodeId,
+                                Progress = 100,
+                                Status = "Completed"
+                            });
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogError(ex, "❌ Error while merging file {FileId}", result.FileId);
+                        }
                     });
+
+                    chunkGroups.Remove(result.FileId);
                 }
                 else
                 {
-                    var percent = (int)(((float)(processedChunks) / (float)result.TotalChunks) * 100);
+                    var percent = (int)(processedChunks / (float)result.TotalChunks * 100);
                     _logger.LogInformation("🎉 Node {nodeId} received  {percent} for file {FileId}", _nodeId, percent, result.FileId);
                     if (percent % 5 == 0)
                     {
-                        await _kafkaService.SendTransferProgressMessage(result.FileId, new TransferProgressMessage()
+                        await _kafkaService.SendTransferProgressMessageAsync(result.FileId, new TransferProgressMessage()
                         {
                             FileId = result.FileId,
                             NodeId = _nodeId,
@@ -234,7 +197,7 @@ namespace MFTTransfer.BackgroundJobs.Consumer.Nodes
             }
         }
 
-        public async Task MergeChunks(string fileName, string fileId, int totalChunks)
+        public async Task MergeChunksAsync(string fileName, string fileId, int totalChunks)
         {
             var fileTempDir = Path.Combine(_tempFolder, fileId);
             if (!Directory.Exists(_mainFolder)) Directory.CreateDirectory(_mainFolder);
@@ -245,17 +208,22 @@ namespace MFTTransfer.BackgroundJobs.Consumer.Nodes
             for (int i = 0; i < totalChunks; i++)
             {
                 var chunkPath = Path.Combine(fileTempDir, $"chunk_{i}");
-                if (!File.Exists(chunkPath)) throw new FileNotFoundException($"Missing chunk: {chunkPath}");
+                if (!File.Exists(chunkPath))
+                {
+                    _logger.LogError("❌ Missing chunk file: {ChunkPath}", chunkPath);
+                    throw new FileNotFoundException($"Missing chunk: {chunkPath}");
+                }
 
-                var data = await File.ReadAllBytesAsync(chunkPath);
-                await output.WriteAsync(data);
+                using var chunkStream = new FileStream(chunkPath, FileMode.Open, FileAccess.Read);
+                await chunkStream.CopyToAsync(output);
             }
 
             Directory.Delete(fileTempDir, true);
             _logger.LogInformation("📦 Merged file saved to {Output}", outputPath);
-
-            await _redisService.MarkNodeTransferComplete(fileId, _nodeId);
-            await _kafkaService.SendTransferCompleteMessage(fileId, new TransferProgressMessage()
+            await _redisService.MarkNodeTransferCompleteAsync(fileId, _nodeId);
+            var transferNode = await _redisService.GetTransferNodeAsync(fileId);
+            var topic = string.Concat(_configuration["Kafka:Topic:TransferComplete"], "_", transferNode);
+            await _kafkaService.SendTransferCompleteMessageAsync(topic, fileId, new TransferProgressMessage
             {
                 FileId = fileId,
                 NodeId = _nodeId,
@@ -271,15 +239,15 @@ namespace MFTTransfer.BackgroundJobs.Consumer.Nodes
             return BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
         }
 
-        public async Task RequestRetryForResumableChunks(string fileId, CancellationToken cancellationToken)
+        public async Task RequestRetryForResumableChunksAsync(string fileId, CancellationToken cancellationToken)
         {
-            var resumableChunks = await _redisService.GetAllResumableChunks(fileId, _nodeId);
+            var resumableChunks = await _redisService.GetAllResumableChunksAsync(fileId, _nodeId);
 
             foreach (var chunkId in resumableChunks)
             {
                 _logger.LogInformation("📣 Requesting retry for chunk {ChunkId} (file {FileId})", chunkId, fileId);
 
-                await _kafkaService.SendRetryChunkRequest(new RetryChunkRequest
+                await _kafkaService.SendRetryChunkMessageAsync(new RetryChunkRequest
                 {
                     FileId = fileId,
                     ChunkId = chunkId,
@@ -288,9 +256,9 @@ namespace MFTTransfer.BackgroundJobs.Consumer.Nodes
             }
         }
 
-        public async Task HandleRetryChunkRequest(RetryChunkRequest request, CancellationToken cancellationToken)
+        public async Task HandleRetryChunkAsync(RetryChunkRequest request, CancellationToken cancellationToken)
         {
-            var chunkMetadata = await _redisService.GetChunkMetadata(request.FileId, request.ChunkId);
+            var chunkMetadata = await _redisService.GetChunkMetadataAsync(request.FileId, request.ChunkId);
             var chunkMessage = new ChunkMessage
             {
                 FileId = request.FileId,
@@ -311,7 +279,7 @@ namespace MFTTransfer.BackgroundJobs.Consumer.Nodes
             {
                 try
                 {
-                    var result = await ResumeChunkDownload(request.NodeId, chunkMessage, cancellationToken);
+                    var result = await ResumeChunkDownloadAsync(request.NodeId, chunkMessage, cancellationToken);
                     if (result != null)
                     {
                         await channel.Writer.WriteAsync(result, cancellationToken);
@@ -324,27 +292,35 @@ namespace MFTTransfer.BackgroundJobs.Consumer.Nodes
                 }
             });
 
-            await ProcessChannelAndMerge(channel, cancellationToken);
+            await ProcessChannelAndMergeAsync(channel, cancellationToken);
         }
 
-        private async Task<ChunkResult?> ResumeChunkDownload(string nodeId, ChunkMessage chunk, CancellationToken cancellationToken)
+        private async Task<ChunkResult?> ResumeChunkDownloadAsync(string nodeId, ChunkMessage chunk, CancellationToken cancellationToken)
         {
-            var offset = await _redisService.GetChunkResumeOffset(chunk.FileId, nodeId, chunk.ChunkId) ?? 0;
+            var offset = await _redisService.GetChunkResumeOffsetAsync(chunk.FileId, nodeId, chunk.ChunkId) ?? 0;
 
-            var policy = Policy.Handle<Exception>().RetryAsync(3, onRetry: (ex, count) =>
-                _logger.LogWarning(ex, "🔁 Retry {Count} for chunk {ChunkId}", count, chunk.ChunkId));
+            var policy = Policy.Handle<Exception>().WaitAndRetryAsync(
+                int.Parse(_configuration["MaxRetryCount"] ?? "3"),
+                retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)),
+                onRetry: (ex, count) => _logger.LogWarning(ex, "🔁 Retry {Count} for chunk {ChunkId}", count, chunk.ChunkId));
 
             return await policy.ExecuteAsync(async () =>
             {
-                using var client = _httpClientFactory.CreateClient();
+                using var client = _httpClientFactory.CreateClient(_configuration["NodeSettings:NodeId"]);
                 var request = new HttpRequestMessage(HttpMethod.Get, chunk.BlobUrl);
                 request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(offset, null);
 
                 using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogError("❌ HTTP {StatusCode} when downloading chunk {ChunkId}", response.StatusCode, chunk.ChunkId);
+                }
+
                 response.EnsureSuccessStatusCode();
 
                 var data = await response.Content.ReadAsByteArrayAsync(cancellationToken);
-                await _redisService.SetChunkResumeOffset(chunk.FileId, nodeId, chunk.ChunkId, offset + data.Length);
+                await _redisService.SetChunkResumeOffsetAsync(chunk.FileId, nodeId, chunk.ChunkId, offset + data.Length);
 
                 return new ChunkResult(chunk.ChunkId, chunk.FileId, chunk.FullFileName, chunk.ChunkIndex, chunk.TotalChunks, data);
             });

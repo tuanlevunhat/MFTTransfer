@@ -5,21 +5,21 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Configuration;
 using MFTTransfer.Domain.Interfaces;
-using MFTTransfer.BackgroundJobs.Consumer.Nodes;
+using MFTTransfer.BackgroundJobs.Helpers;
 
 namespace MFTTransfer.BackgroundJobs.Services
 {
-    public class ChunkRetryBMonitorService : BackgroundService
+    public class ChunkRetryMonitorService : BackgroundService
     {
         private readonly IChunkProcessingHelperFactory _chunkProcessingHelperFactory;
-        private readonly ILogger<ChunkRetryBMonitorService> _logger;
+        private readonly ILogger<ChunkRetryMonitorService> _logger;
         private readonly IRedisService _redisService;
         private readonly string _nodeId;
         private readonly string _tempFolder;
         private readonly string _mainFolder;
         private readonly IConfiguration _configuration;
-        public ChunkRetryBMonitorService(
-            ILogger<ChunkRetryBMonitorService> logger,
+        public ChunkRetryMonitorService(
+            ILogger<ChunkRetryMonitorService> logger,
             IRedisService redisService,
             IChunkProcessingHelperFactory chunkProcessingHelperFactory,
             IConfiguration configuration)
@@ -27,9 +27,9 @@ namespace MFTTransfer.BackgroundJobs.Services
             _logger = logger;
             _redisService = redisService;
             _configuration = configuration;
-            _nodeId = _configuration["NodeBSettings:NodeId"] ?? string.Empty;
-            _tempFolder = _configuration["NodeBSettings:TempFolder"] ?? string.Empty;
-            _mainFolder = _configuration["NodeBSettings:MainFolder"] ?? string.Empty;
+            _nodeId = _configuration["NodeSettings:NodeId"] ?? string.Empty;
+            _tempFolder = _configuration["NodeSettings:TempFolder"] ?? string.Empty;
+            _mainFolder = _configuration["NodeSettings:MainFolder"] ?? string.Empty;
             _chunkProcessingHelperFactory = chunkProcessingHelperFactory;
         }
 
@@ -41,13 +41,13 @@ namespace MFTTransfer.BackgroundJobs.Services
             {
                 try
                 {
-                    var activeFiles = await _redisService.GetFilesWithResumableChunks(_nodeId);
+                    var activeFiles = await _redisService.GetFilesWithResumableChunksAsync(_nodeId);
 
                     foreach (var fileId in activeFiles)
                     {
                         _logger.LogInformation("🔁 Checking resumable chunks for file {FileId}...", fileId);
                         var chunkProcessingHelper = _chunkProcessingHelperFactory.Create(_nodeId, _tempFolder, _mainFolder);
-                        await chunkProcessingHelper.RequestRetryForResumableChunks(fileId, stoppingToken);
+                        await chunkProcessingHelper.RequestRetryForResumableChunksAsync(fileId, stoppingToken);
                     }
                 }
                 catch (Exception ex)

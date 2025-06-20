@@ -34,7 +34,7 @@ namespace MFTTransfer.Infrastructure.Services
             _redisService = redisService ?? throw new ArgumentNullException(nameof(redisService));
         }
 
-        public async Task<ChunkMetadata> UploadBlobPerChunk(Stream stream, string fileId, string chunkId)
+        public async Task<ChunkMetadata> UploadBlobPerChunkAsync(Stream stream, string fileId, string chunkId)
         {
             try
             {
@@ -167,7 +167,7 @@ namespace MFTTransfer.Infrastructure.Services
         {
             var blobName = $"{fileId}";
             var container = _blobStorageHelper.ChunksContainer;
-            var blockIds = await _redisService.GetUploadedBlockIds(fileId);
+            var blockIds = await _redisService.GetUploadedBlockIdsAsync(fileId);
             if (blockIds == null || !blockIds.Any())
             {
                 _logger.LogWarning("⚠️ No blocks found to commit for file {FileId}", fileId);

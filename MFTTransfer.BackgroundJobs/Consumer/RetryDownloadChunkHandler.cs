@@ -1,11 +1,11 @@
 ﻿using System.Text.Json;
+using MFTTransfer.BackgroundJobs.Helpers;
 using MFTTransfer.Domain.Entities;
 using MFTTransfer.Domain.Interfaces;
-using MFTTransfer.Infrastructure.Constants;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
-namespace MFTTransfer.BackgroundJobs.Consumer.Nodes
+namespace MFTTransfer.BackgroundJobs.Consumer
 {
     public class RetryDownloadChunkHandler : IKafkaMessageHandler
     {
@@ -23,8 +23,8 @@ namespace MFTTransfer.BackgroundJobs.Consumer.Nodes
             _configuration = configuration;
         }
 
-        public string Topic => KafkaConstant.KafkaRetryDownloadChunkTopic;
-        public string GroupId => "retry-download-consumer-group";
+        public string Topic => string.Concat(_configuration["Kafka:Topic:RetryDownloadChunk"], "_", _configuration["NodeSettings:NodeId"]);
+        public string GroupId => string.Concat(_configuration["Kafka:Group:RetryDownloadChunk"], "_", _configuration["NodeSettings:NodeId"]);
 
         public async Task HandleAsync(string message, CancellationToken cancellationToken)
         {
@@ -40,7 +40,7 @@ namespace MFTTransfer.BackgroundJobs.Consumer.Nodes
                 _logger.LogInformation("🔄 Received retry request for Chunk {ChunkId} of File {FileId}", request.ChunkId, request.FileId);
 
                 var _chunkProcessingHelper = _chunkProcessingHelperFactory.Create(string.Empty, string.Empty, string.Empty);
-                await _chunkProcessingHelper.HandleRetryChunkRequest(request, cancellationToken);
+                await _chunkProcessingHelper.HandleRetryChunkAsync(request, cancellationToken);
             }
             catch (Exception ex)
             {

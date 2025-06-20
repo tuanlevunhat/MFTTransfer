@@ -1,5 +1,4 @@
-﻿using MFTTransfer.BackgroundJobs;
-using MFTTransfer.Domain.Interfaces;
+﻿using MFTTransfer.Domain.Interfaces;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using MFTTransfer.Monitoring;
@@ -10,21 +9,25 @@ using MFTTransfer.Infrastructure.Services.Kafka;
 using MFTTransfer.Infrastructure.Services;
 using StackExchange.Redis;
 using MFTTransfer.Infrastructure;
-using Microsoft.Extensions.Caching.Distributed;
-using MFTTransfer.BackgroundJobs.Consumer.Nodes;
 using MFTTransfer.BackgroundJobs.Services;
+using MFTTransfer.BackgroundJobs.Consumer;
+using MFTTransfer.BackgroundJobs.Helpers;
+using Microsoft.Extensions.Logging;
 
+Log.Logger = new LoggerConfiguration()
+    .WriteTo.Console()
+    .Enrich.FromLogContext()
+    .MinimumLevel.Debug()
+    .CreateLogger();
+Log.Information("Starting up...");
 IHost host = Host.CreateDefaultBuilder(args)
     .ConfigureServices((hostContext, services) =>
     {
-        services.AddLogging(logging => logging.AddSerilog());
         services.AddSingleton<KafkaTopicManager>();
         services.AddSingleton<AppInitializer>();
         services.AddSingleton<BaseProducerService>();
         services.AddSingleton<IKafkaMessageHandler, InitTransferHandler>();
-        services.AddSingleton<IKafkaMessageHandler, ChunkProcessingBHandler>();
-        services.AddSingleton<IKafkaMessageHandler, ChunkProcessingCHandler>();
-        services.AddSingleton<IKafkaMessageHandler, ChunkProcessingDHandler>();
+        services.AddSingleton<IKafkaMessageHandler, ChunkProcessingHandler>();
         services.AddSingleton<IKafkaMessageHandler, TransferCompleteHandler>();
         services.AddSingleton<IKafkaMessageHandler, StatusUpdateHandler>();
         services.AddSingleton<IKafkaMessageHandler, RetryDownloadChunkHandler>();
@@ -41,26 +44,25 @@ IHost host = Host.CreateDefaultBuilder(args)
         {
             return ConnectionMultiplexer.Connect(hostContext.Configuration["DistributedCacheConfig:ConnectionString"]);
         });
-   
+
         services.AddTransient<IChunkProcessingHelperFactory, ChunkProcessingHelperFactory>();
         services.AddSingleton<RedisCacheHelper>();
-        services.AddHttpClient();
-        services.AddHostedService<ChunkRetryBMonitorService>();
-        services.AddHostedService<ChunkRetryCMonitorService>();
-        services.AddHostedService<ChunkRetryDMonitorService>();
+        services.AddHttpClient(hostContext.Configuration["NodeSettings:NodeId"], client =>
+        {
+            client.Timeout = TimeSpan.FromHours(1);
+        })
+        .SetHandlerLifetime(TimeSpan.FromHours(1));
+        services.AddHostedService<ChunkRetryMonitorService>();
+        services.AddHttpClient<ChunkProcessingHelper>().SetHandlerLifetime(TimeSpan.FromMinutes(10));
     })
     .ConfigureAppConfiguration((context, config) =>
     {
         config.AddJsonFile("appsettings.json", optional: false, reloadOnChange: true);
     })
-    .UseSerilog((context, services, configuration) => configuration
-        .ReadFrom.Configuration(context.Configuration)
-        .ReadFrom.Services(services)
-        .Enrich.FromLogContext()
-        .WriteTo.Console())
+    .UseSerilog()
     .ConfigureLogging(logging =>
     {
-        logging.AddSerilog(LogCollector.ConfigureLogger("http://localhost:9200"), dispose: true);
+        logging.ClearProviders();
     })
     .Build();
 
